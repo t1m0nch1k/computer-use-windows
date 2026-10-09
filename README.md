@@ -1,153 +1,113 @@
 # Computer Use for Windows
 
-> **High-performance, native Windows desktop automation skill and CLI for AI agents (OpenCode, OpenAI Codex, Antigravity, Claude Code).**
+Скилл и Python CLI для управления приложениями Windows через скриншоты, мышь,
+клавиатуру и окна. Windows 10/11, Python 3.10+, интерактивный рабочий стол.
+Лицензия [MIT](LICENSE).
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6.svg)](https://microsoft.com)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://python.org)
+## Установка
 
-An analog of OpenAI Codex / Anthropic Computer Use engineered specifically for Windows. Features sub-second direct UI interrogation, authentic Google 4-color glowing border overlay, 60 FPS animated cursor halo, DPI-aware GDI perception with coordinate grids, and Unicode/clipboard typing.
-
----
-
-## ⚡ Highlights
-
-* **Google-Colored Visual Overlay**: Real-time 6px glowing perimeter frame (Blue, Red, Yellow, Green), floating status pill badge (`⚡ AI is controlling your computer`), and 60 FPS animated multi-color cursor halo. 100% click-through, non-blocking layered Win32 window (`WS_EX_TRANSPARENT`).
-* **Sub-Second Desktop Interrogation (`SysListView32`)**: Queries Windows Explorer desktop control directly in memory (`VirtualAllocEx` + `LVM_GETITEMTEXTW` / `LVM_GETITEMPOSITION`) to resolve icon names and coordinates in **< 20 ms** and launch applications in **< 0.4 s**.
-* **Pixel-Accurate GDI Perception**: GDI `BitBlt` capture with Per-Monitor DPI awareness (`SetProcessDpiAwareness(2)`) for exact 1:1 physical pixel matching across multi-monitor setups.
-* **Coordinate Grid System (`--grid`)**: Automatic 100px coordinate grid with labeled coordinate numbers along all borders for multimodal LLM visual grounding.
-* **Unicode & Instant Clipboard Injection**: Windows `SendInput` for keys and mouse; instant clipboard paste (`paste`) for fast, error-free typing of multilingual text (Russian, English, emoji, code) without layout switching artifacts.
-* **Batch Multi-Action Pipelines (`batch`)**: Sequences clicks, keystrokes, window focus, and screenshots in a single JSON payload with automatic visual overlay lifecycle.
-* **Safety First**: Moving the mouse cursor to `(0, 0)` triggers an instant safety abort; Esc hotkey dismisses overlay.
-
----
-
-## 🛠️ Architecture
-
-```
-computer-use/
-├── SKILL.md                 # Agent instructions (OpenCode, Codex, Antigravity, Claude)
-├── README.md                # Documentation & Quickstart
-├── requirements.txt         # Dependencies (Pillow, pywin32)
-├── LICENSE                  # MIT License
-└── scripts/
-    ├── computer.py          # Unified CLI entrypoint with batch runner & JSON output
-    ├── screen.py            # DPI-aware GDI BitBlt capture, coordinate grid, target markers
-    ├── mouse.py             # SendInput mouse moves, clicks, drag & drop, wheel scroll
-    ├── keyboard.py          # SendInput Unicode typing, hotkeys, special keys
-    ├── window.py            # Desktop window manager (OpenInputDesktop, HWND focus)
-    ├── clipboard.py         # Win32 Unicode clipboard reader and writer
-    ├── desktop.py           # SysListView32 fast desktop icon resolver
-    └── overlay.py           # Layered click-through Google border & cursor halo overlay
-```
-
----
-
-## 🚀 Quick Start
-
-### 1. Installation
-
-```bash
+```powershell
 git clone https://github.com/t1m0nch1k/computer-use-windows.git
 cd computer-use-windows
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-### 2. Basic CLI Commands
+Скопируйте репозиторий в каталог скиллов агента под именем `computer-use`.
+Обязательны `SKILL.md`, `scripts/`, `references/`. В `agents/openai.yaml` —
+метаданные Codex. Пути команд разрешайте относительно установленной папки.
 
-```bash
-# Capture full screen with 100px coordinate grid
-python scripts/computer.py screenshot --grid screen.png
+## Что изменено
 
-# Fast-launch desktop icon in < 0.4s (activates Google overlay automatically)
-python scripts/computer.py launch-icon "Cristalix"
+- Снимки для анализа создаются в `%TEMP%/computer-use-<user>/captures`, удаляются
+  командой `release-screenshot` сразу после просмотра, резервно истекают через
+  5 минут. При закрытии `serve` удаляет свои снимки. В проекте они не создаются.
+- Постоянная JSONL-сессия `serve` сохраняет Python-процесс и оверлей между
+  связанными действиями. Обычный `batch` переиспользует активный оверлей.
+- Подключение к рабочему столу и настройка DPI переиспользуются; длинные цепочки
+  больше не открывают новый дескриптор рабочего стола при каждом действии.
+- PNG кодируется с `compress_level=1` без дорогой оптимизации; сетка и маркер
+  рисуются без копирования полного изображения. Обрезка уменьшает объём данных.
+- Сетка и маркеры обрезанного снимка показывают координаты рабочего стола.
+  В JSON есть `origin` для преобразования локальных координат.
+- Оверлей: рамка, подпись `AI controls this computer | Esc: cancel`, ореол курсора;
+  пропускает клики и не перерисовывается при неподвижном курсоре. Где Windows
+  поддерживает исключение из захвата, оверлей скрыт на скриншотах.
+- Исправлены 64-битные Win32-сигнатуры захвата/оверлея и освобождение GDI-ресурсов.
+  Оверлей закрывается сообщением своему окну, без `taskkill` по PID-файлу.
 
-# Click at coordinates (physical pixels)
-python scripts/computer.py click 500 300
+## Скриншоты: просмотр и удаление
 
-# Type text or paste instantly via clipboard
-python scripts/computer.py paste "https://github.com"
-python scripts/computer.py type "Hello from AI Agent"
-
-# Press hotkey combinations
-python scripts/computer.py hotkey win r
-python scripts/computer.py hotkey ctrl shift esc
-
-# List open windows with HWNDs and bounding boxes
-python scripts/computer.py windows --json
-
-# Bring window to foreground
-python scripts/computer.py focus "Firefox"
+```powershell
+python scripts/computer.py screenshot --grid --json
+# Откройте path из ответа инструментом изображений агента.
+python scripts/computer.py release-screenshot '<path из ответа>' --json
 ```
 
-### 3. Visual Overlay
+Удаляйте после чтения инструментом просмотра. Повторное удаление безопасно:
+`deleted: false`. Резервный процесс живёт независимо от CLI; при сне системы
+или блокировке файла удаление может задержаться.
 
-```bash
-# Start Google glowing border + cursor halo for 10 seconds
-python scripts/computer.py overlay start --duration 10.0
+Только если пользователь попросил сохранить скриншот как результат:
 
-# Stop overlay
+```powershell
+python scripts/computer.py screenshot --keep 'C:\Temp\requested-screen.png' --json
+```
+
+Это исключение из автоматического удаления. Старые команды с выходным путём
+без `--keep` завершаются ошибкой до создания файла.
+
+## Непрерывная работа
+
+```powershell
+python scripts/computer.py serve
+```
+
+После ответа `ready: true` отправляйте через stdin по одному JSON-объекту на
+строку. Ответы в stdout также идут по одному объекту на строку. Например:
+
+```json
+{"id":1,"action":"windows"}
+{"id":2,"action":"screenshot","grid":true,"crop":[100,100,800,600]}
+```
+
+Просмотрите снимок, отправьте `release_screenshot` с полученным `path`.
+После выполнения и проверки цепочки, если следующий шаг не требует GUI,
+отправьте `{"action":"close"}`. EOF также завершает процесс с очисткой.
+Приложение пользователя остаётся открытым.
+
+**[Системный промпт и протокол сессии](references/continuous-use.md)** — скопируйте
+раздел «Системный промпт» в системные инструкции агента. Текст в репозитории
+сам по себе не меняет настройки модели.
+
+Если среда не умеет сохранять stdin-процесс, используйте обычные команды и
+`batch`, а оверлей запускайте один раз на всю связанную GUI-цепочку:
+
+```powershell
+python scripts/computer.py overlay start
+python scripts/computer.py batch actions.json --json
+# Следующие связанные GUI-шаги без повторного старта оверлея.
 python scripts/computer.py overlay stop
 ```
 
-### 4. Batch Automation Pipeline
+## Ограничения и проверка
 
-```bash
-python scripts/computer.py batch '[
-  {"action": "focus", "window": "Firefox"},
-  {"action": "wait", "seconds": 0.3},
-  {"action": "click", "x": 500, "y": 75},
-  {"action": "paste", "text": "https://news.ycombinator.com"},
-  {"action": "press", "key": "enter"},
-  {"action": "wait", "seconds": 2.0},
-  {"action": "screenshot", "grid": true, "path": "screen.png"}
-]' --json
+Захват пока охватывает основной монитор. Защищённые экраны UAC и сеансы без
+интерактивного рабочего стола не поддерживаются. Esc и угол `(0,0)` останавливают
+сессию/пакет перед следующим действием; уже начатый ввод может закончиться.
+Оверлей один на пользователя в интерактивном сеансе; не запускайте параллельно
+несколько агентов управления одним рабочим столом.
+
+Проверки без кликов, ввода или изменения приложений:
+
+```powershell
+python -m unittest discover -s tests -v
 ```
 
----
+Инструкция для модели: [SKILL.md](SKILL.md).
 
-## 🤖 Agent Integrations
-
-### OpenCode (`opencode.ai`)
-
-Place or symlink the folder in OpenCode's skills directory:
-```bash
-# Global installation for OpenCode
-mkdir -p ~/.config/opencode/skills
-cp -r computer-use ~/.config/opencode/skills/
-```
-
-Verify with:
-```bash
-opencode debug skill
-```
-
-You can also use:
-* **Slash command**: Type `/computer <action>`
-* **Specialized agent**: `opencode --agent desktop`
-
-### OpenAI Codex & Antigravity
-
-Symlink or copy to the respective skills directory:
-```bash
-# Codex
-cp -r computer-use ~/.codex/skills/
-
-# Antigravity
-cp -r computer-use ~/.gemini/config/skills/
-```
-
----
-
-## 📋 Requirements
-
-* Windows 10 or Windows 11 (x64)
-* Python 3.10+
-* `Pillow>=10.0.0`
-* `pywin32>=306`
-
----
-
-## 📄 License
-
-MIT License. See [LICENSE](LICENSE) for details.
+Локальный замер на Windows: медиана кодирования одного снимка 800×600 из
+10 повторов — 88,2 мс с прежним `optimize=True` и 12,8 мс с новым режимом.
+Цена ускорения — размер PNG в этом примере вырос с 73 до 95 КБ. Запрос позиции
+курсора: 526 мс при запуске CLI (5 повторов), 0,31 мс в уже запущенном `serve`
+(20 повторов, запуск сессии не включён). Это замеры конкретного компьютера,
+а не гарантия скорости приложений или задержки инструментов модели.

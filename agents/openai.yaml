@@ -1,0 +1,6 @@
+interface:
+  display_name: "Computer Use for Windows"
+  short_description: "Windows GUI sessions with temporary screenshots"
+  default_prompt: "Use $computer-use to complete this Windows GUI workflow in one continuous session."
+policy:
+  allow_implicit_invocation: true

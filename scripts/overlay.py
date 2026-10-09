@@ -9,30 +9,53 @@ import os
 import time
 import argparse
 import ctypes
+from win_desktop import attach_input_desktop
+from win_desktop import init_dpi
+import getpass
 from ctypes import wintypes
 
 u32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 k32 = ctypes.windll.kernel32
 
-def init_dpi():
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        try:
-            u32.SetProcessDPIAware()
-        except Exception:
-            pass
+CLASS_NAME = "ComputerUseOverlay-" + getpass.getuser()
+_process = None
+# Declare handle/pointer signatures for 64-bit Python.
+def _api(dll, name, result, args):
+    fn = getattr(dll, name)
+    fn.restype, fn.argtypes = result, args
 
-def attach_input_desktop():
-    try:
-        hinput = u32.OpenInputDesktop(0, False, 0x01FF)
-        if hinput:
-            u32.SetThreadDesktop(hinput)
-            return hinput
-    except Exception:
-        pass
-    return None
+_api(k32, "GetModuleHandleW", wintypes.HMODULE, [wintypes.LPCWSTR])
+_api(k32, "CreateMutexW", wintypes.HANDLE, [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR])
+_api(k32, "CloseHandle", wintypes.BOOL, [wintypes.HANDLE])
+_api(u32, "FindWindowW", wintypes.HWND, [wintypes.LPCWSTR, wintypes.LPCWSTR])
+_api(u32, "CreateWindowExW", wintypes.HWND, [wintypes.DWORD, wintypes.LPCWSTR,
+    wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    ctypes.c_int, wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, ctypes.c_void_p])
+_api(u32, "OpenInputDesktop", wintypes.HANDLE, [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD])
+_api(u32, "SetThreadDesktop", wintypes.BOOL, [wintypes.HANDLE])
+_api(u32, "CloseDesktop", wintypes.BOOL, [wintypes.HANDLE])
+_api(u32, "BeginPaint", wintypes.HDC, [wintypes.HWND, ctypes.c_void_p])
+_api(u32, "EndPaint", wintypes.BOOL, [wintypes.HWND, ctypes.c_void_p])
+_api(u32, "SetLayeredWindowAttributes", wintypes.BOOL, [wintypes.HWND, wintypes.DWORD, wintypes.BYTE, wintypes.DWORD])
+_api(u32, "SetTimer", ctypes.c_size_t, [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p])
+_api(u32, "ShowWindow", wintypes.BOOL, [wintypes.HWND, ctypes.c_int])
+_api(u32, "UpdateWindow", wintypes.BOOL, [wintypes.HWND])
+_api(u32, "DestroyWindow", wintypes.BOOL, [wintypes.HWND])
+_api(u32, "InvalidateRect", wintypes.BOOL, [wintypes.HWND, ctypes.c_void_p, wintypes.BOOL])
+_api(u32, "FillRect", ctypes.c_int, [wintypes.HDC, ctypes.c_void_p, wintypes.HBRUSH])
+_api(u32, "DrawTextW", ctypes.c_int, [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p, wintypes.UINT])
+_api(u32, "PostMessageW", wintypes.BOOL, [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM])
+_api(u32, "GetWindowThreadProcessId", wintypes.DWORD, [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)])
+_api(gdi32, "CreateSolidBrush", wintypes.HBRUSH, [wintypes.DWORD])
+_api(gdi32, "CreatePen", wintypes.HANDLE, [ctypes.c_int, ctypes.c_int, wintypes.DWORD])
+_api(gdi32, "SelectObject", wintypes.HANDLE, [wintypes.HDC, wintypes.HANDLE])
+_api(gdi32, "GetStockObject", wintypes.HANDLE, [ctypes.c_int])
+_api(gdi32, "DeleteObject", wintypes.BOOL, [wintypes.HANDLE])
+_api(gdi32, "Ellipse", wintypes.BOOL, [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int])
+_api(gdi32, "SetBkMode", ctypes.c_int, [wintypes.HDC, ctypes.c_int])
+_api(gdi32, "SetTextColor", wintypes.DWORD, [wintypes.HDC, wintypes.DWORD])
+_api(gdi32, "CreateFontW", wintypes.HANDLE, [ctypes.c_int] * 5 + [wintypes.DWORD] * 8 + [wintypes.LPCWSTR])
 
 # Window styles
 WS_POPUP = 0x80000000
@@ -63,7 +86,7 @@ class Overlay:
         init_dpi()
         attach_input_desktop()
         self.duration = duration
-        self.start_time = time.time()
+        self.start_time = time.monotonic()
         self.w = u32.GetSystemMetrics(0)
         self.h = u32.GetSystemMetrics(1)
         self.last_cursor = (0, 0)
@@ -71,7 +94,7 @@ class Overlay:
         self.hwnd = None
 
     def create_window(self):
-        wc_name = "AntigravityComputerUseOverlay"
+        wc_name = CLASS_NAME
 
         class WNDCLASSEXW(ctypes.Structure):
             _fields_ = [
@@ -114,7 +137,9 @@ class Overlay:
         wc.hbrBackground = bg_brush
         wc.lpszClassName = wc_name
 
-        u32.RegisterClassExW(ctypes.byref(wc))
+        u32.RegisterClassExW.argtypes = [ctypes.c_void_p]
+        if not u32.RegisterClassExW(ctypes.byref(wc)):
+            raise ctypes.WinError()
 
         ex_style = WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE
         style = WS_POPUP | WS_VISIBLE
@@ -122,17 +147,28 @@ class Overlay:
         self.hwnd = u32.CreateWindowExW(
             ex_style,
             wc_name,
-            "Antigravity Overlay",
+            "Computer Use",
             style,
             0, 0, self.w, self.h,
             0, 0, wc.hInstance, None
         )
 
+        if not self.hwnd:
+            raise ctypes.WinError()
+        self._bg_brush = bg_brush
+        self._font = gdi32.CreateFontW(-15, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI")
+        # Hide the indicator from captured screenshots when Windows supports it.
+        try:
+            u32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+            u32.SetWindowDisplayAffinity(self.hwnd, 0x11)
+        except AttributeError:
+            pass
+
         # Set transparency color key
         u32.SetLayeredWindowAttributes(self.hwnd, COLORKEY, 0, LWA_COLORKEY)
 
-        # Set 20ms timer for cursor tracking (~50 FPS)
-        u32.SetTimer(self.hwnd, 1, 20, None)
+        # 30 FPS cursor tracking; stationary frames do not repaint.
+        u32.SetTimer(self.hwnd, 1, 33, None)
 
         u32.ShowWindow(self.hwnd, 5)
         u32.UpdateWindow(self.hwnd)
@@ -150,6 +186,7 @@ class Overlay:
 
         ps = PAINTSTRUCT()
         hdc = u32.BeginPaint(hwnd, ctypes.byref(ps))
+        old_font = gdi32.SelectObject(hdc, self._font) if self._font else None
 
         w, h = self.w, self.h
         bw = 6  # Border width
@@ -180,7 +217,7 @@ class Overlay:
         fill_box(0, 0, bw, h, COLOR_BLUE)
 
         # 5. Top Status Pill Badge
-        pw, ph = 460, 32
+        pw, ph = min(440, w - 24), 36
         px1 = (w - pw) // 2
         px2 = px1 + pw
         py1 = bw
@@ -205,7 +242,7 @@ class Overlay:
         # Text inside pill
         gdi32.SetBkMode(hdc, 1)  # TRANSPARENT
         gdi32.SetTextColor(hdc, COLOR_WHITE)
-        txt = "Antigravity is controlling your computer (Esc to cancel)"
+        txt = "AI controls this computer | Esc: cancel"
         rect_txt = wintypes.RECT(px1 + 72, py1 + 7, px2 - 6, py2)
         u32.DrawTextW(hdc, txt, -1, ctypes.byref(rect_txt), 0x0000)
 
@@ -234,17 +271,17 @@ class Overlay:
         gdi32.DeleteObject(dot_pen)
         gdi32.DeleteObject(dot_brush)
 
+        if old_font:
+            gdi32.SelectObject(hdc, old_font)
         u32.EndPaint(hwnd, ctypes.byref(ps))
 
     def on_timer(self, hwnd):
         # Check duration
-        if self.duration and (time.time() - self.start_time) >= self.duration:
+        if self.duration and (time.monotonic() - self.start_time) >= self.duration:
             u32.DestroyWindow(hwnd)
             return
 
-        # Check PID file for external stop command
-        pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay.pid")
-        if not os.path.exists(pid_file):
+        if u32.GetAsyncKeyState(0x1B) & 0x8000:
             u32.DestroyWindow(hwnd)
             return
 
@@ -259,57 +296,89 @@ class Overlay:
         rect_old = wintypes.RECT(old_x - r, old_y - r, old_x + r, old_y + r)
         rect_new = wintypes.RECT(cx - r, cy - r, cx + r, cy + r)
 
+        if (cx, cy) == self.last_cursor:
+            return
         self.last_cursor = (cx, cy)
-        self.cursor_color_idx = int((time.time() - self.start_time) * 4)
+        self.cursor_color_idx = (self.cursor_color_idx + 1) % 4
 
         u32.InvalidateRect(hwnd, ctypes.byref(rect_old), True)
         u32.InvalidateRect(hwnd, ctypes.byref(rect_new), True)
 
     def run(self):
-        self.create_window()
-        msg = wintypes.MSG()
-        while u32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
-            u32.TranslateMessage(ctypes.byref(msg))
-            u32.DispatchMessageW(ctypes.byref(msg))
+        mutex = k32.CreateMutexW(None, False, "Local\\" + CLASS_NAME)
+        if not mutex:
+            raise ctypes.WinError()
+        if k32.GetLastError() == 183:
+            k32.CloseHandle(mutex)
+            return
+        try:
+            self.create_window()
+            msg = wintypes.MSG()
+            while u32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
+                u32.TranslateMessage(ctypes.byref(msg))
+                u32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            if hasattr(self, "_bg_brush"):
+                gdi32.DeleteObject(self._bg_brush)
+            if getattr(self, "_font", None):
+                gdi32.DeleteObject(self._font)
+            k32.CloseHandle(mutex)
+
+
+def overlay_status():
+    hwnd = u32.FindWindowW(CLASS_NAME, None)
+    pid = wintypes.DWORD()
+    if hwnd:
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return {"running": bool(hwnd), "pid": pid.value if hwnd else None}
+
 
 def start_overlay(duration=None):
-    script_path = os.path.abspath(__file__)
-    pid_file = os.path.join(os.path.dirname(script_path), "overlay.pid")
-
-    # Stop any existing
-    stop_overlay()
-
+    global _process
+    state = overlay_status()
+    if state["running"]:
+        return state["pid"]
     import subprocess
-    cmd = [sys.executable, script_path, "run"]
-    if duration:
+    cmd = [sys.executable, os.path.abspath(__file__), "run"]
+    if duration is not None:
+        if duration <= 0:
+            raise ValueError("Overlay duration must be positive")
         cmd.extend(["--duration", str(duration)])
+    proc = subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, close_fds=True,
+                            cwd=os.path.dirname(os.path.abspath(__file__)))
+    _process = proc
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        state = overlay_status()
+        if state["running"]:
+            return state["pid"]
+        if proc.poll() is not None:
+            raise RuntimeError("Overlay failed to start")
+        time.sleep(0.02)
+    proc.terminate()
+    raise RuntimeError("Overlay startup timed out")
 
-    # CREATE_NO_WINDOW = 0x08000000
-    CREATE_NO_WINDOW = 0x08000000
-    proc = subprocess.Popen(cmd, creationflags=CREATE_NO_WINDOW)
-
-    with open(pid_file, "w") as f:
-        f.write(str(proc.pid))
-
-    return proc.pid
 
 def stop_overlay():
-    script_path = os.path.abspath(__file__)
-    pid_file = os.path.join(os.path.dirname(script_path), "overlay.pid")
-    if os.path.exists(pid_file):
+    global _process
+    hwnd = u32.FindWindowW(CLASS_NAME, None)
+    if not hwnd:
+        return False
+    # Graceful close of our own window; never taskkill a potentially reused PID.
+    u32.PostMessageW(hwnd, 0x0010, 0, 0)
+    deadline = time.monotonic() + 2
+    while overlay_status()["running"] and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if _process and not overlay_status()["running"]:
         try:
-            with open(pid_file, "r") as f:
-                pid = int(f.read().strip())
-            import subprocess
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
-        except Exception:
+            _process.wait(timeout=1)
+            _process = None
+        except __import__("subprocess").TimeoutExpired:
             pass
-        try:
-            os.remove(pid_file)
-        except Exception:
-            pass
-        return True
-    return False
+    return not overlay_status()["running"]
+
 
 def main():
     parser = argparse.ArgumentParser(description="Computer Use Native Win32 Visual Overlay")
@@ -336,8 +405,8 @@ def main():
         stopped = stop_overlay()
         print("Overlay stopped." if stopped else "Overlay not running.")
     elif args.command == "status":
-        pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay.pid")
-        print(f"{{\"running\": {str(os.path.exists(pid_file)).lower()}}}")
+        import json
+        print(json.dumps(overlay_status()))
 
 if __name__ == "__main__":
     main()

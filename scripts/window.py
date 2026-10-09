@@ -7,6 +7,8 @@ on the active Windows interactive desktop.
 import sys
 import argparse
 import ctypes
+from win_desktop import attach_input_desktop
+from win_desktop import init_dpi
 import json
 import os
 
@@ -23,25 +25,6 @@ SW_MINIMIZE = 6
 SW_RESTORE = 9
 
 WM_CLOSE = 0x0010
-
-def init_dpi():
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
-    except Exception:
-        try:
-            u32.SetProcessDPIAware()
-        except Exception:
-            pass
-
-def attach_input_desktop():
-    try:
-        hinput = u32.OpenInputDesktop(0, False, 0x01FF)
-        if hinput:
-            u32.SetThreadDesktop(hinput)
-            return hinput
-    except Exception:
-        pass
-    return None
 
 class RECT(ctypes.Structure):
     _fields_ = [

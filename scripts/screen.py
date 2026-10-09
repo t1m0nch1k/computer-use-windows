@@ -6,9 +6,12 @@ with optional coordinate grid overlay, cursor visualization, and cropping.
 
 import sys
 import os
-import time
 import argparse
 import ctypes
+from win_desktop import attach_input_desktop
+from win_desktop import init_dpi
+from ctypes import wintypes
+import capture_store
 try:
     from PIL import Image, ImageDraw, ImageFont
     HAS_PIL = True
@@ -17,46 +20,27 @@ except ImportError:
 
 u32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
-gp = ctypes.windll.gdiplus
 
-def save_bitmap_gdiplus(hbmp, output_path):
-    class GdiplusStartupInput(ctypes.Structure):
-        _fields_ = [('GdiplusVersion', ctypes.c_uint32), ('DebugEventCallback', ctypes.c_void_p), ('SuppressBackgroundThread', ctypes.c_bool), ('SuppressExternalCodecs', ctypes.c_bool)]
-    class GUID(ctypes.Structure):
-        _fields_ = [('Data1', ctypes.c_ulong), ('Data2', ctypes.c_ushort), ('Data3', ctypes.c_ushort), ('Data4', ctypes.c_ubyte * 8)]
-
-    token = ctypes.c_void_p()
-    inp = GdiplusStartupInput(1, None, False, False)
-    gp.GdiplusStartup(ctypes.byref(token), ctypes.byref(inp), None)
-    try:
-        p_image = ctypes.c_void_p()
-        gp.GdipCreateBitmapFromHBITMAP(hbmp, 0, ctypes.byref(p_image))
-        png_clsid = GUID(0x557cf406, 0x1a04, 0x11d3, (ctypes.c_ubyte * 8)(0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e))
-        gp.GdipSaveImageToFile(p_image, output_path, ctypes.byref(png_clsid), None)
-        gp.GdipDisposeImage(p_image)
-    finally:
-        gp.GdiplusShutdown(token)
-
-# Set DPI awareness for 1:1 physical pixel matching
-def init_dpi():
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
-    except Exception:
-        try:
-            u32.SetProcessDPIAware()
-        except Exception:
-            pass
-
-def attach_input_desktop():
-    """Attaches current thread to user's interactive desktop if needed."""
-    try:
-        hinput = u32.OpenInputDesktop(0, False, 0x01FF)
-        if hinput:
-            u32.SetThreadDesktop(hinput)
-            return hinput
-    except Exception:
-        pass
-    return None
+# Pointer-sized handles must not use ctypes' default 32-bit return type.
+u32.GetDC.argtypes = [wintypes.HWND]
+u32.GetDC.restype = wintypes.HDC
+u32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+u32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+u32.OpenInputDesktop.restype = wintypes.HANDLE
+u32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+u32.CloseDesktop.argtypes = [wintypes.HANDLE]
+gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+gdi32.CreateCompatibleDC.restype = wintypes.HDC
+gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+gdi32.SelectObject.restype = wintypes.HANDLE
+gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+gdi32.DeleteDC.argtypes = [wintypes.HDC]
+gdi32.BitBlt.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                       ctypes.c_int, wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT,
+                          wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
 
 class BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
@@ -115,46 +99,44 @@ def capture_screen_raw(region=None):
     if not hdc_screen:
         raise RuntimeError("Failed to obtain Screen DC")
 
-    hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
-    hbmp = gdi32.CreateCompatibleBitmap(hdc_screen, rw, rh)
-    old_bmp = gdi32.SelectObject(hdc_mem, hbmp)
-
-    # Copy screen bits
-    gdi32.BitBlt(hdc_mem, 0, 0, rw, rh, hdc_screen, rx, ry, 0x00CC0020)  # SRCCOPY
-
-    bmi = BITMAPINFO()
-    bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-    bmi.bmiHeader.biWidth = rw
-    bmi.bmiHeader.biHeight = -rh  # Top-down DIB
-    bmi.bmiHeader.biPlanes = 1
-    bmi.bmiHeader.biBitCount = 32
-    bmi.bmiHeader.biCompression = 0  # BI_RGB
-
-    buf = ctypes.create_string_buffer(rw * rh * 4)
-    gdi32.GetDIBits(hdc_mem, hbmp, 0, rh, buf, ctypes.byref(bmi), 0)
-
-    img = None
-    if HAS_PIL:
-        img = Image.frombuffer('RGBA', (rw, rh), buf, 'raw', 'BGRA', 0, 1).convert('RGB')
+    hdc_mem = hbmp = old_bmp = None
+    try:
+        hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
+        hbmp = gdi32.CreateCompatibleBitmap(hdc_screen, rw, rh)
+        if not hdc_mem or not hbmp:
+            raise RuntimeError("Failed to allocate capture bitmap")
+        old_bmp = gdi32.SelectObject(hdc_mem, hbmp)
+        if not gdi32.BitBlt(hdc_mem, 0, 0, rw, rh, hdc_screen, rx, ry, 0x00CC0020):
+            raise RuntimeError("BitBlt failed")
         gdi32.SelectObject(hdc_mem, old_bmp)
-        gdi32.DeleteObject(hbmp)
-        gdi32.DeleteDC(hdc_mem)
+        old_bmp = None
+        bmi = BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = rw
+        bmi.bmiHeader.biHeight = -rh
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        buf = ctypes.create_string_buffer(rw * rh * 4)
+        if gdi32.GetDIBits(hdc_mem, hbmp, 0, rh, buf, ctypes.byref(bmi), 0) != rh:
+            raise RuntimeError("GetDIBits failed")
+        return Image.frombytes('RGB', (rw, rh), buf.raw, 'raw', 'BGRX')
+    finally:
+        if old_bmp:
+            gdi32.SelectObject(hdc_mem, old_bmp)
+        if hbmp:
+            gdi32.DeleteObject(hbmp)
+        if hdc_mem:
+            gdi32.DeleteDC(hdc_mem)
         u32.ReleaseDC(0, hdc_screen)
-        return img
-    else:
-        # Fallback return hbmp and dims
-        gdi32.SelectObject(hdc_mem, old_bmp)
-        gdi32.DeleteDC(hdc_mem)
-        u32.ReleaseDC(0, hdc_screen)
-        return hbmp, rw, rh
 
-def draw_grid_overlay(img, step=100):
+
+def draw_grid_overlay(img, step=100, origin=(0, 0)):
     """
     Draws coordinate lines and pixel labels over the image.
     Essential for vision models to estimate (X, Y) click coordinates reliably.
     """
     w, h = img.size
-    overlay = img.copy()
+    overlay = img
     draw = ImageDraw.Draw(overlay)
 
     try:
@@ -167,12 +149,12 @@ def draw_grid_overlay(img, step=100):
     text_color = (255, 255, 0)            # Bright yellow
 
     # Draw vertical grid lines & X labels
-    for x in range(0, w, step):
-        is_major = (x % 500 == 0) and (x > 0)
+    for x in range((-origin[0]) % step, w, step):
+        is_major = ((x + origin[0]) % 500 == 0)
         col = major_line_color if is_major else line_color
         draw.line([(x, 0), (x, h)], fill=col, width=2 if is_major else 1)
 
-        label = f"{x}"
+        label = f"{x + origin[0]}"
         # Top label
         bbox = draw.textbbox((x + 2, 2), label, font=font)
         draw.rectangle([bbox[0] - 1, bbox[1] - 1, bbox[2] + 1, bbox[3] + 1], fill=(0, 0, 0))
@@ -184,12 +166,12 @@ def draw_grid_overlay(img, step=100):
         draw.text((x + 2, h - 14), label, fill=text_color, font=font)
 
     # Draw horizontal grid lines & Y labels
-    for y in range(0, h, step):
-        is_major = (y % 500 == 0) and (y > 0)
+    for y in range((-origin[1]) % step, h, step):
+        is_major = ((y + origin[1]) % 500 == 0)
         col = major_line_color if is_major else line_color
         draw.line([(0, y), (w, y)], fill=col, width=2 if is_major else 1)
 
-        label = f"{y}"
+        label = f"{y + origin[1]}"
         # Left label
         bbox = draw.textbbox((2, y + 2), label, font=font)
         draw.rectangle([bbox[0] - 1, bbox[1] - 1, bbox[2] + 1, bbox[3] + 1], fill=(0, 0, 0))
@@ -202,13 +184,15 @@ def draw_grid_overlay(img, step=100):
 
     return overlay
 
-def draw_cursor_marker(img, cx=None, cy=None):
+def draw_cursor_marker(img, cx=None, cy=None, origin=(0, 0)):
     """Draws a crosshair and circular target marker at cursor coordinates."""
     if cx is None or cy is None:
         cx, cy = get_cursor_pos()
 
+    label_coords = (cx, cy)
+    cx, cy = cx - origin[0], cy - origin[1]
     w, h = img.size
-    overlay = img.copy()
+    overlay = img
     draw = ImageDraw.Draw(overlay)
 
     r = 14
@@ -225,7 +209,7 @@ def draw_cursor_marker(img, cx=None, cy=None):
     draw.ellipse([cx - 2, cy - 2, cx + 2, cy + 2], fill=(255, 255, 255))
 
     # Badge with exact coordinates
-    coord_text = f"({cx},{cy})"
+    coord_text = f"({label_coords[0]},{label_coords[1]})"
     try:
         font = ImageFont.load_default()
         bbox = draw.textbbox((cx + 12, cy + 12), coord_text, font=font)
@@ -236,48 +220,50 @@ def draw_cursor_marker(img, cx=None, cy=None):
 
     return overlay
 
-def capture_screenshot(output_path=None, grid=False, cursor=False, cursor_coords=None, region=None):
-    """High-level capture function returning saved file path and image metadata."""
-    if not output_path:
-        timestamp = int(time.time() * 1000)
-        output_path = os.path.abspath(f"screenshot_{timestamp}.png")
-    else:
-        output_path = os.path.abspath(output_path)
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    raw = capture_screen_raw(region=region)
-
-    if HAS_PIL:
-        img = raw
+def capture_screenshot(output_path=None, grid=False, cursor=False, cursor_coords=None,
+                       region=None, keep=False):
+    """Temporary by default; persistent paths require an explicit keep opt-in."""
+    if not HAS_PIL:
+        raise RuntimeError("Pillow is required: pip install -r requirements.txt")
+    if output_path and not keep:
+        raise ValueError("Explicit output paths require --keep; omit the path for a temporary capture")
+    if keep and not output_path:
+        raise ValueError("--keep requires an explicit output path")
+    sw, sh = get_screen_metrics()
+    if region:
+        if len(region) != 4 or region[2] <= 0 or region[3] <= 0:
+            raise ValueError("Crop must contain X Y and positive width/height")
+        x, y, w, h = map(int, region)
+        x, y = max(0, min(x, sw-1)), max(0, min(y, sh-1))
+        region = (x, y, min(w, sw-x), min(h, sh-y))
+    origin = region[:2] if region else (0, 0)
+    target = os.path.abspath(output_path) if keep else str(capture_store.allocate())
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        img = capture_screen_raw(region=region)
         w, h = img.size
-
         if grid:
-            img = draw_grid_overlay(img, step=100)
+            draw_grid_overlay(img, origin=origin)
+        if cursor or cursor_coords:
+            cx, cy = cursor_coords if cursor_coords else get_cursor_pos()
+            draw_cursor_marker(img, cx, cy, origin=origin)
+        # PNG optimization costs CPU and brings little benefit for short-lived captures.
+        img.save(target, format="PNG", optimize=False, compress_level=1)
+        if not keep:
+            capture_store.expire_later(target)
+    except BaseException:
+        if not keep:
+            capture_store.release(target)
+        raise
+    return {"path": target, "width": w, "height": h, "origin": list(origin),
+            "grid": grid, "cursor": bool(cursor or cursor_coords),
+            "temporary": not keep, "expires_in_seconds": None if keep else capture_store.TTL}
 
-        if cursor:
-            cx, cy = cursor_coords if cursor_coords else (None, None)
-            img = draw_cursor_marker(img, cx=cx, cy=cy)
-
-        img.save(output_path, format="PNG", optimize=True)
-    else:
-        hbmp, w, h = raw
-        try:
-            save_bitmap_gdiplus(hbmp, output_path)
-        finally:
-            gdi32.DeleteObject(hbmp)
-
-    return {
-        "path": output_path,
-        "width": w,
-        "height": h,
-        "grid": grid if HAS_PIL else False,
-        "cursor": cursor if HAS_PIL else False
-    }
 
 def main():
     parser = argparse.ArgumentParser(description="Computer Use Screen Capture")
     parser.add_argument("output", nargs="?", default=None, help="Output PNG file path")
+    parser.add_argument("--keep", action="store_true", help="Keep explicit output as a user-requested deliverable")
     parser.add_argument("--grid", action="store_true", help="Overlay coordinate grid")
     parser.add_argument("--cursor", action="store_true", help="Draw current mouse cursor position")
     parser.add_argument("--marker-x", type=int, default=None, help="Custom marker X coordinate")
@@ -296,7 +282,7 @@ def main():
             grid=args.grid,
             cursor=cursor_flag,
             cursor_coords=cursor_coords,
-            region=args.crop
+            region=args.crop, keep=args.keep
         )
         if args.json:
             import json

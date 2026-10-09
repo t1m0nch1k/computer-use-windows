@@ -30,6 +30,7 @@ import window
 import clipboard
 import overlay
 import desktop
+import capture_store
 
 def execute_action(action_dict):
     """Executes a single action dictionary and returns result."""
@@ -48,8 +49,11 @@ def execute_action(action_dict):
             grid=grid,
             cursor=cursor,
             cursor_coords=marker,
-            region=crop
+            region=crop, keep=action_dict.get("keep", False)
         )
+
+    elif action_type == "release_screenshot":
+        return {"deleted": capture_store.release(action_dict["path"])}
 
     elif action_type in ("click", "left_click"):
         x = action_dict.get("x")
@@ -171,7 +175,7 @@ def execute_action(action_dict):
             return {"action": "set_clipboard", "length": len(t)}
 
     elif action_type in ("wait", "sleep"):
-        sec = float(action_dict.get("seconds") or action_dict.get("duration") or 1.0)
+        sec = float(action_dict.get("seconds", action_dict.get("duration", 1.0)))
         time.sleep(sec)
         return {"action": "wait", "seconds": sec}
 
@@ -199,7 +203,7 @@ def execute_action(action_dict):
     else:
         raise ValueError(f"Unknown action: '{action_type}'")
 
-def run_batch(actions_data):
+def run_batch(actions_data, manage_overlay=True):
     """Executes a sequential list of actions with failsafe checks and active visual overlay."""
     if isinstance(actions_data, str):
         if os.path.exists(actions_data):
@@ -210,25 +214,78 @@ def run_batch(actions_data):
     else:
         actions = actions_data
 
-    # Turn on visual overlay during batch execution
-    overlay.start_overlay(duration=30.0)
+    if not isinstance(actions, list):
+        raise ValueError("Batch must be a JSON array")
+    started = manage_overlay and not overlay.overlay_status()["running"]
+    if started:
+        overlay.start_overlay(duration=300.0)
 
     results = []
     try:
         for i, act in enumerate(actions):
-            mouse.check_failsafe()
             try:
+                mouse.check_failsafe()
+                if not overlay.overlay_status()["running"]:
+                    raise RuntimeError("Session cancelled: overlay closed")
                 res = execute_action(act)
                 results.append({"step": i, "status": "ok", "result": res})
             except Exception as e:
                 results.append({"step": i, "status": "error", "error": str(e)})
                 break
     finally:
-        overlay.stop_overlay()
+        if started:
+            overlay.stop_overlay()
 
     return results
 
+def serve():
+    """One long-lived JSON-lines process, one overlay, and cleanup on EOF/close."""
+    owned = set()
+    started = not overlay.overlay_status()["running"]
+    if started:
+        overlay.start_overlay()
+    try:
+        print(json.dumps({"ready": True, "protocol": "jsonl", "pid": os.getpid()}), flush=True)
+        for line in sys.stdin:
+            request = {}
+            try:
+                request = json.loads(line)
+                if not isinstance(request, dict):
+                    raise ValueError("Request must be an object")
+                if request.get("action") == "close":
+                    print(json.dumps({"id": request.get("id"), "closed": True}), flush=True)
+                    break
+                if not overlay.overlay_status()["running"]:
+                    raise RuntimeError("Session cancelled or overlay closed; start a new session explicitly")
+                mouse.check_failsafe()
+                if request.get("action") == "batch":
+                    result = run_batch(request["actions"], manage_overlay=False)
+                    captures = [r.get("result", {}) for r in result]
+                else:
+                    result = execute_action(request)
+                    captures = [result]
+                for item in captures:
+                    if isinstance(item, dict) and item.get("temporary"):
+                        owned.add(item["path"])
+                print(json.dumps({"id": request.get("id"), "result": result}, ensure_ascii=False), flush=True)
+            except Exception as exc:
+                print(json.dumps({"id": request.get("id") if isinstance(request, dict) else None,
+                                  "error": str(exc)}, ensure_ascii=False), flush=True)
+    finally:
+        for path in owned:
+            try:
+                capture_store.release(path)
+            except PermissionError:
+                pass  # Independent expiry process retries locked files.
+        if started:
+            overlay.stop_overlay()
+
+
 def main():
+    # JSONL is always UTF-8 even on Windows consoles with a legacy code page.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument("--json", action="store_true", help="Output result in JSON format")
 
@@ -242,11 +299,16 @@ def main():
     # 1. screenshot
     p_sc = subparsers.add_parser("screenshot", parents=[common_parser], help="Capture desktop screenshot")
     p_sc.add_argument("output", nargs="?", default=None, help="Output PNG path")
+    p_sc.add_argument("--keep", action="store_true", help="Keep explicit output as a deliverable")
     p_sc.add_argument("--grid", action="store_true", help="Draw 100px coordinate grid overlay")
     p_sc.add_argument("--cursor", action="store_true", help="Draw cursor position target marker")
     p_sc.add_argument("--marker-x", type=int, default=None, help="Custom target marker X")
     p_sc.add_argument("--marker-y", type=int, default=None, help="Custom target marker Y")
     p_sc.add_argument("--crop", nargs=4, type=int, metavar=('X', 'Y', 'W', 'H'), help="Crop region")
+
+    p_rel = subparsers.add_parser("release-screenshot", parents=[common_parser], help="Delete an owned temporary screenshot after viewing")
+    p_rel.add_argument("path")
+    subparsers.add_parser("serve", help="Persistent JSON-lines session on stdin/stdout")
 
     # 2. click
     p_clk = subparsers.add_parser("click", parents=[common_parser], help="Click mouse")
@@ -357,7 +419,12 @@ def main():
         cmd = args.command
         res = None
 
-        if cmd == "screenshot":
+        if cmd == "serve":
+            serve()
+            return
+        if cmd == "release-screenshot":
+            res = {"deleted": capture_store.release(args.path)}
+        elif cmd == "screenshot":
             marker = (args.marker_x, args.marker_y) if (args.marker_x is not None and args.marker_y is not None) else None
             cursor_flag = args.cursor or (marker is not None)
             res = screen.capture_screenshot(
@@ -365,7 +432,7 @@ def main():
                 grid=args.grid,
                 cursor=cursor_flag,
                 cursor_coords=marker,
-                region=args.crop
+                region=args.crop, keep=args.keep
             )
         elif cmd == "click":
             res = mouse.click(args.x, args.y, button=args.button, count=args.count)
@@ -427,8 +494,7 @@ def main():
                 stopped = overlay.stop_overlay()
                 res = {"action": "overlay_stop", "stopped": stopped}
             elif args.action == "status":
-                pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay.pid")
-                res = {"running": os.path.exists(pid_file)}
+                res = overlay.overlay_status()
         elif cmd == "desktop-icons":
             res = desktop.get_desktop_icons()
         elif cmd == "find-icon":
@@ -439,10 +505,10 @@ def main():
             res = desktop.launch_desktop_icon(args.name)
 
         if args.json:
-            print(json.dumps(res))
+            print(json.dumps(res, ensure_ascii=False))
         else:
             if cmd == "screenshot":
-                print(f"Screenshot saved: {res['path']} ({res['width']}x{res['height']})")
+                print(f"Screenshot: {res['path']} ({res['width']}x{res['height']})")
             elif cmd == "cursor":
                 print(f"Cursor: X={res['x']}, Y={res['y']}")
             elif cmd == "screen":
@@ -456,6 +522,8 @@ def main():
                 print(res["text"])
             else:
                 print(f"Success: {res}")
+        if cmd == "batch" and any(r["status"] == "error" for r in res):
+            sys.exit(1)
 
     except Exception as e:
         if args.json:

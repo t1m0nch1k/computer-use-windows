@@ -10,30 +10,13 @@ import os
 import time
 import argparse
 import ctypes
+from win_desktop import attach_input_desktop
+from win_desktop import init_dpi
 from ctypes import wintypes
 import json
 
 u32 = ctypes.windll.user32
 k32 = ctypes.windll.kernel32
-
-def init_dpi():
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        try:
-            u32.SetProcessDPIAware()
-        except Exception:
-            pass
-
-def attach_input_desktop():
-    try:
-        hinput = u32.OpenInputDesktop(0, False, 0x01FF)
-        if hinput:
-            u32.SetThreadDesktop(hinput)
-            return hinput
-    except Exception:
-        pass
-    return None
 
 def find_desktop_listview():
     init_dpi()

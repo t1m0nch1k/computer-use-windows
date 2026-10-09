@@ -8,6 +8,8 @@ import sys
 import time
 import argparse
 import ctypes
+from win_desktop import attach_input_desktop
+from win_desktop import init_dpi
 import json
 
 u32 = ctypes.windll.user32
@@ -23,25 +25,6 @@ MOUSEEVENTF_MIDDLEUP = 0x0040
 MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_HWHEEL = 0x1000
 MOUSEEVENTF_ABSOLUTE = 0x8000
-
-def init_dpi():
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
-    except Exception:
-        try:
-            u32.SetProcessDPIAware()
-        except Exception:
-            pass
-
-def attach_input_desktop():
-    try:
-        hinput = u32.OpenInputDesktop(0, False, 0x01FF)
-        if hinput:
-            u32.SetThreadDesktop(hinput)
-            return hinput
-    except Exception:
-        pass
-    return None
 
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]

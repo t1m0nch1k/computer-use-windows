@@ -6,6 +6,7 @@ Provides reliable Unicode clipboard read/write operations via Win32 API.
 import sys
 import argparse
 import ctypes
+from win_desktop import attach_input_desktop
 import json
 
 u32 = ctypes.windll.user32
@@ -31,16 +32,6 @@ u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
 u32.SetClipboardData.restype = ctypes.c_void_p
 u32.GetClipboardData.argtypes = [ctypes.c_uint]
 u32.GetClipboardData.restype = ctypes.c_void_p
-
-def attach_input_desktop():
-    try:
-        hinput = u32.OpenInputDesktop(0, False, 0x01FF)
-        if hinput:
-            u32.SetThreadDesktop(hinput)
-            return hinput
-    except Exception:
-        pass
-    return None
 
 def get_clipboard_text():
     attach_input_desktop()

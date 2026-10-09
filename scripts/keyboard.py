@@ -8,6 +8,7 @@ import sys
 import time
 import argparse
 import ctypes
+from win_desktop import attach_input_desktop
 import json
 
 u32 = ctypes.windll.user32
@@ -92,16 +93,6 @@ class INPUT(ctypes.Structure):
         _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
     _anonymous_ = ("_input",)
     _fields_ = [("type", ctypes.c_ulong), ("_input", _INPUT)]
-
-def attach_input_desktop():
-    try:
-        hinput = u32.OpenInputDesktop(0, False, 0x01FF)
-        if hinput:
-            u32.SetThreadDesktop(hinput)
-            return hinput
-    except Exception:
-        pass
-    return None
 
 def send_unicode_char(char):
     """Sends a single unicode character keypress via SendInput."""
